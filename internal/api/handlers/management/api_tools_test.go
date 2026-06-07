@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -154,6 +155,74 @@ func TestAPICallTransportAPIKeyAuthFallsBackToConfigProxyURL(t *testing.T) {
 				t.Fatalf("proxy URL = %v, want %s", proxyURL, tc.wantProxy)
 			}
 		})
+	}
+}
+
+func TestNormalizeClaudeAPICallHeadersUsesBearerForThirdPartyClaude(t *testing.T) {
+	t.Parallel()
+
+	parsedURL, errParse := url.Parse("https://anyrouter.top/v1/models")
+	if errParse != nil {
+		t.Fatalf("url.Parse returned error: %v", errParse)
+	}
+	headers := map[string]string{
+		"Content-Type":      "application/json",
+		"Anthropic-Version": "2023-06-01",
+		"x-api-key":         "$TOKEN$",
+	}
+
+	normalizeClaudeAPICallHeaders(parsedURL, headers)
+
+	if got := headers["Authorization"]; got != "Bearer $TOKEN$" {
+		t.Fatalf("Authorization = %q, want Bearer $TOKEN$", got)
+	}
+	if _, ok := headers["x-api-key"]; ok {
+		t.Fatal("x-api-key should be removed for third-party Claude-compatible endpoints")
+	}
+}
+
+func TestNormalizeClaudeAPICallHeadersKeepsOfficialAnthropicAPIKey(t *testing.T) {
+	t.Parallel()
+
+	parsedURL, errParse := url.Parse("https://api.anthropic.com/v1/models")
+	if errParse != nil {
+		t.Fatalf("url.Parse returned error: %v", errParse)
+	}
+	headers := map[string]string{
+		"Anthropic-Version": "2023-06-01",
+		"x-api-key":         "$TOKEN$",
+	}
+
+	normalizeClaudeAPICallHeaders(parsedURL, headers)
+
+	if got := headers["x-api-key"]; got != "$TOKEN$" {
+		t.Fatalf("x-api-key = %q, want $TOKEN$", got)
+	}
+	if got := headers["Authorization"]; got != "" {
+		t.Fatalf("Authorization = %q, want empty", got)
+	}
+}
+
+func TestNormalizeClaudeAPICallHeadersKeepsExplicitAuthorization(t *testing.T) {
+	t.Parallel()
+
+	parsedURL, errParse := url.Parse("https://anyrouter.top/v1/models")
+	if errParse != nil {
+		t.Fatalf("url.Parse returned error: %v", errParse)
+	}
+	headers := map[string]string{
+		"Anthropic-Version": "2023-06-01",
+		"Authorization":     "Bearer custom",
+		"x-api-key":         "$TOKEN$",
+	}
+
+	normalizeClaudeAPICallHeaders(parsedURL, headers)
+
+	if got := headers["Authorization"]; got != "Bearer custom" {
+		t.Fatalf("Authorization = %q, want Bearer custom", got)
+	}
+	if got := headers["x-api-key"]; got != "$TOKEN$" {
+		t.Fatalf("x-api-key = %q, want $TOKEN$", got)
 	}
 }
 

@@ -85,6 +85,10 @@ type apiCallResponse struct {
 //     Note: if you need to override the HTTP Host header, set header["Host"].
 //   - data (optional): Raw request body as string (useful for POST/PUT/PATCH).
 //
+// For Claude-compatible requests, APICall mirrors the Claude executor auth
+// header strategy: official api.anthropic.com API-key calls keep x-api-key,
+// while third-party Claude-compatible endpoints use Authorization: Bearer.
+//
 // Proxy selection (highest priority first):
 //  1. Selected credential proxy_url
 //  2. Global config proxy-url
@@ -137,6 +141,7 @@ func (h *Handler) APICall(c *gin.Context) {
 	if reqHeaders == nil {
 		reqHeaders = map[string]string{}
 	}
+	normalizeClaudeAPICallHeaders(parsedURL, reqHeaders)
 
 	var hostOverride string
 	var token string
@@ -226,6 +231,59 @@ func firstNonEmptyString(values ...*string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeClaudeAPICallHeaders(parsedURL *url.URL, headers map[string]string) {
+	if parsedURL == nil || len(headers) == 0 {
+		return
+	}
+	if isOfficialAnthropicAPI(parsedURL) {
+		return
+	}
+	if _, _, ok := headerValueByName(headers, "anthropic-version"); !ok {
+		return
+	}
+	if _, _, ok := headerValueByName(headers, "authorization"); ok {
+		return
+	}
+	xAPIKeyName, xAPIKey, ok := headerValueByName(headers, "x-api-key")
+	if !ok {
+		return
+	}
+	trimmed := strings.TrimSpace(xAPIKey)
+	if trimmed == "" {
+		return
+	}
+	delete(headers, xAPIKeyName)
+	headers["Authorization"] = bearerHeaderValue(trimmed)
+}
+
+func isOfficialAnthropicAPI(parsedURL *url.URL) bool {
+	if parsedURL == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(parsedURL.Scheme), "https") &&
+		strings.EqualFold(strings.TrimSpace(parsedURL.Host), "api.anthropic.com")
+}
+
+func headerValueByName(headers map[string]string, name string) (string, string, bool) {
+	if len(headers) == 0 {
+		return "", "", false
+	}
+	for key, value := range headers {
+		if strings.EqualFold(strings.TrimSpace(key), name) {
+			return key, value, true
+		}
+	}
+	return "", "", false
+}
+
+func bearerHeaderValue(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(strings.ToLower(trimmed), "bearer ") {
+		return trimmed
+	}
+	return "Bearer " + trimmed
 }
 
 func tokenValueForAuth(auth *coreauth.Auth) string {
