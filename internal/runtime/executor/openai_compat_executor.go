@@ -790,5 +790,38 @@ func (e statusErr) Error() string {
 	}
 	return fmt.Sprintf("status %d", e.code)
 }
-func (e statusErr) StatusCode() int            { return e.code }
+func (e statusErr) StatusCode() int {
+	if isRateLimitCooldownErrorBody(e.msg) {
+		return http.StatusTooManyRequests
+	}
+	return e.code
+}
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
+
+func isRateLimitCooldownErrorBody(body string) bool {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return false
+	}
+	var payload struct {
+		Error *struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return false
+	}
+	if payload.Error == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(payload.Error.Type), "invalid_request_error") {
+		return false
+	}
+	errorCode := strings.TrimSpace(payload.Error.Code)
+	if errorCode == "" {
+		errorCode = strings.TrimSpace(payload.Code)
+	}
+	return strings.EqualFold(errorCode, "rate_limit_cooldown")
+}
