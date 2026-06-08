@@ -207,6 +207,34 @@ func TestApplyPayloadConfigWithRequest_FromProtocolGateUsesSourceProtocol(t *tes
 	}
 }
 
+func TestApplyPayloadConfigWithRequest_RequestedAliasCanSetClaudeOneMillionContextBeta(t *testing.T) {
+	cfg := &config.Config{
+		Payload: config.PayloadConfig{
+			Override: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{
+						{Name: "claude-opus-4-8[1m]", Protocol: "claude"},
+					},
+					Params: map[string]any{
+						"betas": []any{"context-1m-2025-08-07"},
+					},
+				},
+			},
+		},
+	}
+	payload := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}]}`)
+
+	out := ApplyPayloadConfigWithRequest(cfg, "claude-opus-4-8", "claude", "claude", "", payload, nil, "claude-opus-4-8[1m]", "", nil)
+	betas := gjson.GetBytes(out, "betas")
+	if !betas.IsArray() {
+		t.Fatalf("expected betas array for 1M context alias, payload=%s", string(out))
+	}
+	arr := betas.Array()
+	if len(arr) != 1 || arr[0].String() != "context-1m-2025-08-07" {
+		t.Fatalf("unexpected betas = %s; payload=%s", betas.Raw, string(out))
+	}
+}
+
 func TestApplyPayloadConfigWithRequest_PayloadConditionsNarrowRule(t *testing.T) {
 	cfg := &config.Config{
 		Payload: config.PayloadConfig{

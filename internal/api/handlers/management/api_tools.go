@@ -16,11 +16,19 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
 const defaultAPICallTimeout = 60 * time.Second
+
+const (
+	claudeOneMillionContextModel = "claude-opus-4-8"
+	claudeOneMillionContextAlias = "claude-opus-4-8[1m]"
+	claudeOneMillionContextBeta  = "context-1m-2025-08-07"
+)
 
 const (
 	geminiOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
@@ -142,6 +150,7 @@ func (h *Handler) APICall(c *gin.Context) {
 		reqHeaders = map[string]string{}
 	}
 	normalizeClaudeAPICallHeaders(parsedURL, reqHeaders)
+	requestData := prepareClaudeAPICallData(parsedURL, reqHeaders, body.Data)
 
 	var hostOverride string
 	var token string
@@ -170,8 +179,8 @@ func (h *Handler) APICall(c *gin.Context) {
 	}
 
 	var requestBody io.Reader
-	if body.Data != "" {
-		requestBody = strings.NewReader(body.Data)
+	if requestData != "" {
+		requestBody = strings.NewReader(requestData)
 	}
 
 	req, errNewRequest := http.NewRequestWithContext(c.Request.Context(), method, urlStr, requestBody)
@@ -256,6 +265,102 @@ func normalizeClaudeAPICallHeaders(parsedURL *url.URL, headers map[string]string
 	}
 	delete(headers, xAPIKeyName)
 	headers["Authorization"] = bearerHeaderValue(trimmed)
+}
+
+func prepareClaudeAPICallData(parsedURL *url.URL, headers map[string]string, data string) string {
+	if !isClaudeAPICall(parsedURL, headers) || strings.TrimSpace(data) == "" {
+		return data
+	}
+
+	out := []byte(data)
+	betas, updated := extractClaudeAPICallBetas(out)
+	out = updated
+
+	model := strings.TrimSpace(gjson.GetBytes(out, "model").String())
+	switch {
+	case strings.EqualFold(model, claudeOneMillionContextModel):
+		betas = append(betas, claudeOneMillionContextBeta)
+	case strings.EqualFold(model, claudeOneMillionContextAlias):
+		betas = append(betas, claudeOneMillionContextBeta)
+		if rewritten, errSet := sjson.SetBytes(out, "model", claudeOneMillionContextModel); errSet == nil {
+			out = rewritten
+		}
+	}
+
+	mergeClaudeAPICallBetas(headers, betas)
+	return string(out)
+}
+
+func isClaudeAPICall(parsedURL *url.URL, headers map[string]string) bool {
+	if isOfficialAnthropicAPI(parsedURL) {
+		return true
+	}
+	_, _, ok := headerValueByName(headers, "anthropic-version")
+	return ok
+}
+
+func extractClaudeAPICallBetas(body []byte) ([]string, []byte) {
+	result := gjson.GetBytes(body, "betas")
+	if !result.Exists() {
+		return nil, body
+	}
+
+	var betas []string
+	if result.IsArray() {
+		for _, item := range result.Array() {
+			if beta := strings.TrimSpace(item.String()); beta != "" {
+				betas = append(betas, beta)
+			}
+		}
+	} else if beta := strings.TrimSpace(result.String()); beta != "" {
+		betas = append(betas, beta)
+	}
+
+	updated, errDelete := sjson.DeleteBytes(body, "betas")
+	if errDelete != nil {
+		return betas, body
+	}
+	return betas, updated
+}
+
+func mergeClaudeAPICallBetas(headers map[string]string, betas []string) {
+	if headers == nil || len(betas) == 0 {
+		return
+	}
+
+	key, value, ok := headerValueByName(headers, "anthropic-beta")
+	if !ok {
+		key = "Anthropic-Beta"
+	}
+
+	seen := map[string]struct{}{}
+	merged := make([]string, 0, len(betas)+1)
+	for _, part := range strings.Split(value, ",") {
+		beta := strings.TrimSpace(part)
+		if beta == "" {
+			continue
+		}
+		if _, exists := seen[beta]; exists {
+			continue
+		}
+		seen[beta] = struct{}{}
+		merged = append(merged, beta)
+	}
+	for _, beta := range betas {
+		beta = strings.TrimSpace(beta)
+		if beta == "" {
+			continue
+		}
+		if _, exists := seen[beta]; exists {
+			continue
+		}
+		seen[beta] = struct{}{}
+		merged = append(merged, beta)
+	}
+	if len(merged) == 0 {
+		return
+	}
+	headers[key] = strings.Join(merged, ",")
 }
 
 func isOfficialAnthropicAPI(parsedURL *url.URL) bool {

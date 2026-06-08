@@ -9,6 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/tidwall/gjson"
 )
 
 func TestAPICallTransportDirectBypassesGlobalProxy(t *testing.T) {
@@ -223,6 +224,75 @@ func TestNormalizeClaudeAPICallHeadersKeepsExplicitAuthorization(t *testing.T) {
 	}
 	if got := headers["x-api-key"]; got != "$TOKEN$" {
 		t.Fatalf("x-api-key = %q, want $TOKEN$", got)
+	}
+}
+
+func TestPrepareClaudeAPICallDataAddsOneMillionContextBetaForOpus48(t *testing.T) {
+	t.Parallel()
+
+	parsedURL, errParse := url.Parse("https://api.anthropic.com/v1/messages")
+	if errParse != nil {
+		t.Fatalf("url.Parse returned error: %v", errParse)
+	}
+	headers := map[string]string{
+		"Anthropic-Version": "2023-06-01",
+	}
+	data := `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}]}`
+
+	out := prepareClaudeAPICallData(parsedURL, headers, data)
+
+	if got := gjson.Get(out, "model").String(); got != "claude-opus-4-8" {
+		t.Fatalf("model = %q, want claude-opus-4-8; payload=%s", got, out)
+	}
+	if got := headers["Anthropic-Beta"]; got != "context-1m-2025-08-07" {
+		t.Fatalf("Anthropic-Beta = %q, want context-1m-2025-08-07", got)
+	}
+}
+
+func TestPrepareClaudeAPICallDataRewritesOneMillionAliasAndMergesBetas(t *testing.T) {
+	t.Parallel()
+
+	parsedURL, errParse := url.Parse("https://anyrouter.top/v1/messages")
+	if errParse != nil {
+		t.Fatalf("url.Parse returned error: %v", errParse)
+	}
+	headers := map[string]string{
+		"Anthropic-Version": "2023-06-01",
+		"anthropic-beta":    "claude-code-20250219,context-1m-2025-08-07",
+	}
+	data := `{"model":"claude-opus-4-8[1m]","betas":["interleaved-thinking-2025-05-14"],"messages":[{"role":"user","content":"hi"}]}`
+
+	out := prepareClaudeAPICallData(parsedURL, headers, data)
+
+	if got := gjson.Get(out, "model").String(); got != "claude-opus-4-8" {
+		t.Fatalf("model = %q, want claude-opus-4-8; payload=%s", got, out)
+	}
+	if gjson.Get(out, "betas").Exists() {
+		t.Fatalf("betas should be removed from upstream payload: %s", out)
+	}
+	want := "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14"
+	if got := headers["anthropic-beta"]; got != want {
+		t.Fatalf("anthropic-beta = %q, want %q", got, want)
+	}
+}
+
+func TestPrepareClaudeAPICallDataSkipsNonClaudeRequests(t *testing.T) {
+	t.Parallel()
+
+	parsedURL, errParse := url.Parse("https://api.openai.example.com/v1/chat/completions")
+	if errParse != nil {
+		t.Fatalf("url.Parse returned error: %v", errParse)
+	}
+	headers := map[string]string{}
+	data := `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}]}`
+
+	out := prepareClaudeAPICallData(parsedURL, headers, data)
+
+	if out != data {
+		t.Fatalf("payload changed for non-Claude request: %s", out)
+	}
+	if got := headers["Anthropic-Beta"]; got != "" {
+		t.Fatalf("Anthropic-Beta = %q, want empty", got)
 	}
 }
 

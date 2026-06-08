@@ -2737,6 +2737,37 @@ func TestThinkingE2EClaudeAdaptive_Body(t *testing.T) {
 	runThinkingTests(t, cases)
 }
 
+func TestThinkingE2EClaudeOpus47PlusBudgetInputUsesAdaptiveThinking(t *testing.T) {
+	cases := []struct {
+		model  string
+		budget int
+		effort string
+	}{
+		{model: "claude-opus-4-7", budget: 8192, effort: "medium"},
+		{model: "claude-opus-4-8", budget: 32768, effort: "xhigh"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			body := []byte(fmt.Sprintf(`{"model":%q,"max_tokens":64000,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":%d}}`, tc.model, tc.budget))
+
+			out, err := thinking.ApplyThinking(body, tc.model, "claude", "claude", "claude")
+			if err != nil {
+				t.Fatalf("unexpected error: %v, body=%s", err, string(out))
+			}
+			if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
+				t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, string(out))
+			}
+			if gjson.GetBytes(out, "thinking.budget_tokens").Exists() {
+				t.Fatalf("budget_tokens should be removed for %s; body=%s", tc.model, string(out))
+			}
+			if got := gjson.GetBytes(out, "output_config.effort").String(); got != tc.effort {
+				t.Fatalf("output_config.effort = %q, want %q; body=%s", got, tc.effort, string(out))
+			}
+		})
+	}
+}
+
 // getTestModels returns the shared model definitions for E2E tests.
 func getTestModels() []*registry.ModelInfo {
 	return []*registry.ModelInfo{

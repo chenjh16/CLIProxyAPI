@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -145,5 +146,56 @@ func TestLookupModelInfoReturnsCloneForStaticDefinitions(t *testing.T) {
 	second := LookupModelInfo("claude-sonnet-4-6")
 	if second == nil || second.Thinking == nil || len(second.Thinking.Levels) == 0 || second.Thinking.Levels[0] == "mutated" {
 		t.Fatalf("expected static lookup clone, got %+v", second)
+	}
+}
+
+func TestStaticClaudeOpus47PlusUsesAdaptiveThinkingOnly(t *testing.T) {
+	for _, id := range []string{"claude-opus-4-7", "claude-opus-4-8"} {
+		model := LookupStaticModelInfo(id)
+		if model == nil || model.Thinking == nil {
+			t.Fatalf("%s missing thinking metadata: %+v", id, model)
+		}
+		if model.Thinking.Min != 0 || model.Thinking.Max != 0 {
+			t.Fatalf("%s thinking budget range = [%d,%d], want adaptive-only levels", id, model.Thinking.Min, model.Thinking.Max)
+		}
+		if !model.Thinking.DynamicAllowed {
+			t.Fatalf("%s should allow adaptive default effort", id)
+		}
+		if !reflect.DeepEqual(model.Thinking.Levels, []string{"low", "medium", "high", "xhigh", "max"}) {
+			t.Fatalf("%s levels = %+v", id, model.Thinking.Levels)
+		}
+	}
+}
+
+func TestStaticGeminiFamilySharedModelsHaveConsistentThinkingSupport(t *testing.T) {
+	type source struct {
+		name   string
+		models []*ModelInfo
+	}
+	type seenModel struct {
+		source   string
+		thinking *ThinkingSupport
+	}
+
+	sources := []source{
+		{name: "gemini", models: GetGeminiModels()},
+		{name: "vertex", models: GetGeminiVertexModels()},
+		{name: "gemini-cli", models: GetGeminiCLIModels()},
+	}
+
+	seen := map[string]seenModel{}
+	for _, src := range sources {
+		for _, model := range src.models {
+			if model == nil || model.ID == "" || model.Thinking == nil {
+				continue
+			}
+			if previous, ok := seen[model.ID]; ok {
+				if !reflect.DeepEqual(previous.thinking, model.Thinking) {
+					t.Fatalf("%s thinking differs between %s (%+v) and %s (%+v)", model.ID, previous.source, previous.thinking, src.name, model.Thinking)
+				}
+				continue
+			}
+			seen[model.ID] = seenModel{source: src.name, thinking: model.Thinking}
+		}
 	}
 }
